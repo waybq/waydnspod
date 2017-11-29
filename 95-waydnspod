@@ -1,0 +1,141 @@
+#!/bin/sh
+
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++#
+# wayDdnspod V17.11.17
+# Dynamic DNS using DNSPod API
+# Original by waybq<52121678@163.com>, http://www.waybq.win/
+# Edited by waybq
+#
+#++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++#
+
+# 获取路由器拨号的WANIP
+WAN_UNICOM=`ip -o -4 addr list | grep -Er '\s(pppoe-wan[^a-zA-Z0-9])' | awk '{print $4}' | cut -d/ -f1`
+
+# WAN_TELECOM=`ip -o -4 addr list | grep -Er '\s(pppoe-wan189)' | awk '{print $4}' | cut -d/ -f1`
+# WAN_URL=`curl -s http://members.3322.org/dyndns/getip`
+
+AGENT="waydnspod/17.11.20(52121678@163.com)"
+
+# 此处输入token
+TOKEN=""
+
+# 需要更新的域名及对应的WANIP "域名 子域名 WANIP"
+DDNS_data1="example.com www $WAN_UNICOM"
+# DDNS_data2="way.win home $WAN_TELECOM"
+# DDNS_data3="way.win www $WAN_URL"
+
+# 保存日志的路径，放在www下可以通过 http://路由器IP/waydnspod.log 查看
+LOGFILE_path="/www/"
+LOGFILE_name="waydnspod.log"
+LOGFILE_fullpath=${LOGFILE_path}${LOGFILE_name}
+# LOGFILE_fullpath='/dev/null 2>&1'
+if [ -e ${LOGFILE_fullpath} ]; then
+log_numline=`awk 'END{print NR}' ${LOGFILE_fullpath}`
+if [ ${log_numline} -ge 200 ]; then
+`mv ${LOGFILE_fullpath} ${LOGFILE_path}"bak_"${LOGFILE_name}`
+fi
+fi
+
+LOG_Memory='\n'`date +"%Y%m%d %T"`'\twaydnspod.sh running!\n'
+
+Recordlog(){
+for arg in $@;do
+LOG_Memory=${LOG_Memory}${arg}' '
+done
+LOG_Memory=${LOG_Memory}'\n'
+}
+
+hotpluginfo=${ACTION}'\t'${INTERFACE}'\t'${DEVICE:-"Null value!"}
+Recordlog ${hotpluginfo}
+
+
+ApiPost() {
+local inter="https://dnsapi.cn/${1:?'NO API parameter!'}"
+local param="login_token=${TOKEN:?'Please input token!'}&format=json&${2}"
+#wget --quiet --no-check-certificate --output-document=- --user-agent=$AGENT --post-data $param $inter
+curl -k -s -A $AGENT -X POST $inter -d $param
+}
+
+GetRecordInfo(){
+recordCD= recordMS= domainID= recordID= recordIP=
+recordlist=$(ApiPost "Record.List" "domain=${1}&sub_domain=${2}")
+recordIP=$(echo $recordlist |sed 's/.*,"value":"\([0-9\.]*\)".*/\1/')
+echo $recordIP
+}
+
+DdnsUpdate() {
+recordlist=$(ApiPost "Record.List" "domain=${1}&sub_domain=${2}")
+recordID=$(echo $recordlist |sed 's/.*\[{"id":"\([0-9]*\)".*/\1/')
+recordIP=$(echo $recordlist |sed 's/.*,"value":"\([0-9\.]*\)".*/\1/')
+
+unset WANIP
+WANIP=${3}
+recordRS=$(ApiPost "Record.Modify" "domain=${1}&record_id=${recordID}&sub_domain=${2}&record_type=A&record_line=默认&value=${WANIP}&ttl=600")
+RrecordCD=$(echo $recordRS |sed 's/.*{"code":"\([0-9]*\)".*/\1/')
+RrecordMS=$(echo $recordRS |sed 's/.*,"message":"\([^"]*\)".*/\1/')
+RrecordIP=$(echo $recordRS |sed 's/.*,"value":"\([0-9\.]*\)".*/\1/')
+
+# echo RrecordIP ${RrecordIP}
+if [ "$RrecordIP" = "$WANIP" ]; then
+if [ "$RrecordCD" = "1" ]; then
+RrecordIP="Domain: ${2}.${1}\tIP changed:${recordIP} to ${RrecordIP}"
+echo -e ${RrecordIP}
+return 0
+fi
+recordMS="Domain: ${2}.${1}:${RrecordMS}"
+echo ${recordMS}
+return 1
+else
+echo "Domain: ${2}.${1}:Updata Failed! Please check your network."
+return 1
+fi
+}
+
+DdnsCheck_up() {
+    IsIPv4=`echo ${3} |grep '\(\(^[1-9]\{1\}[0-9]\{0,2\}\)\(\(\.[0-9]\{1,3\}\)\{3\}$\)\)' | wc -l`
+	if [ ${IsIPv4} -eq 1 ]; then
+	local postRS
+	local lastIP
+	local hostIP=${3}
+
+	unset lastIP
+	lastIP=$(GetRecordInfo $1 $2)
+		if [ $? -eq 0 ]; then
+			if [ "$lastIP" != "$hostIP" ]; then
+			postRS=$(DdnsUpdate $1 $2 $3)
+				if [ $? -eq 0 ]; then
+				Recordlog "${postRS}"
+	echo ${postRS}
+	echo "hostIP: ${hostIP}"
+	echo "lastIP: ${lastIP}"
+				return 0
+				else
+				Recordlog ${postRS}
+	echo ${postRS}
+	echo "hostIP: ${hostIP}"
+	echo "lastIP: ${lastIP}"
+				return 1
+				fi
+			fi
+		Recordlog "Domain: ${2}.${1}\tIP not changed: ${3}"
+	echo "Same IP not need changed: ${2}.${1}"
+	echo "hostIP: ${hostIP}"
+	echo "lastIP: ${lastIP}"
+		return 1
+		fi
+	Recordlog ${lastIP}
+	return 1
+	fi
+	echo -e '\n'"get WANIP error: ${2}.${1}"'\n'
+	Recordlog "Domain: ${2}.${1}\tget WANIP error: ${3}"
+	return 1
+}
+
+DdnsCheck_up $DDNS_data1
+# DdnsCheck_up $DDNS_data2
+# DdnsCheck_up $DDNS_data3
+
+LOG_Memory=${LOG_Memory}`date +"%Y%m%d %T"`
+echo -e ${LOG_Memory}>>${LOGFILE_fullpath}
+
+# echo `curl -s POST http://10.10.10.10/Ddnspod.php -d "log=${LOG_Memory}"`>>/dev/null 2>&1
